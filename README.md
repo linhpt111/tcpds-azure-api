@@ -96,6 +96,17 @@ GET /api/v1/sales/inventory?start_date=2026-07-06&limit=2
 `inventory` is snapshot-style data, so not every date has matching rows. If a
 specific date returns `count: 0`, try a wider `start_date` range.
 
+Large result sets support offset pagination:
+
+```text
+GET /api/v1/sales/inventory?start_date=2025-07-01&limit=10000&offset=0
+GET /api/v1/sales/inventory?start_date=2025-07-01&limit=10000&offset=10000
+GET /api/v1/sales/inventory?start_date=2025-07-01&limit=10000&offset=20000
+```
+
+When more rows exist, the response includes `has_more: true`, `next_offset`,
+and a `Link` header with `rel="next"`.
+
 ## Success Response
 
 ```json
@@ -108,6 +119,9 @@ specific date returns `count: 0`, try a wider `start_date` range.
   "date_column": "sold_date",
   "date_format": "dd/mm/yyyy",
   "limit": 2,
+  "offset": 0,
+  "next_offset": 2,
+  "has_more": true,
   "truncated": true,
   "data": [
     {

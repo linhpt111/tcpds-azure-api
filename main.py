@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 
 
 logging.basicConfig(level=logging.INFO)
@@ -111,19 +111,21 @@ def build_date_mapping(start_date_str):
     return start, today, mapping
 
 
-def get_rows(file_name, sk_column, date_column, start_date, limit):
+def get_rows(file_name, sk_column, date_column, start_date, limit, offset):
     start, end, past_to_current = build_date_mapping(start_date)
     past_sk_set = set(past_to_current)
 
     rows = []
-    truncated = False
+    matched_before_page = 0
+    has_more = False
 
     if not past_sk_set:
         return {
             "records": rows,
             "start_date": start.strftime("%d/%m/%Y"),
             "end_date": end.strftime("%d/%m/%Y"),
-            "truncated": truncated,
+            "has_more": has_more,
+            "next_offset": None,
         }
 
     local_path = download_blob_to_cache(file_name)
@@ -140,6 +142,16 @@ def get_rows(file_name, sk_column, date_column, start_date, limit):
         if matching.empty:
             continue
 
+        matching_count = len(matching)
+        if matched_before_page + matching_count <= offset:
+            matched_before_page += matching_count
+            continue
+
+        start_index = max(offset - matched_before_page, 0)
+        if start_index:
+            matching = matching.iloc[start_index:].copy()
+        matched_before_page += matching_count
+
         original_sk = matching[sk_column].astype(str)
         matching[sk_column] = original_sk.map(lambda sk: past_to_current[sk]["date_sk"])
         matching.insert(
@@ -151,31 +163,32 @@ def get_rows(file_name, sk_column, date_column, start_date, limit):
         remaining = limit - len(rows)
         if len(matching) > remaining:
             rows.extend(matching.head(remaining).to_dict(orient="records"))
-            truncated = True
+            has_more = True
             break
 
         rows.extend(matching.to_dict(orient="records"))
         if len(rows) >= limit:
-            truncated = True
+            has_more = True
             break
 
     return {
         "records": rows,
         "start_date": start.strftime("%d/%m/%Y"),
         "end_date": end.strftime("%d/%m/%Y"),
-        "truncated": truncated,
+        "has_more": has_more,
+        "next_offset": offset + len(rows) if has_more else None,
     }
 
 
-def get_channel_rows(channel, start_date, limit):
+def get_channel_rows(channel, start_date, limit, offset):
     if channel not in DATA_FILES:
         raise HTTPException(status_code=404, detail=f"Unknown channel: {channel}")
 
     file_name, sk_column, date_column = DATA_FILES[channel]
-    return get_rows(file_name, sk_column, date_column, start_date, limit)
+    return get_rows(file_name, sk_column, date_column, start_date, limit, offset)
 
 
-def build_response(channel, result, limit):
+def build_response(channel, result, limit, offset):
     _, _, date_column = DATA_FILES[channel]
     return {
         "status": "success",
@@ -186,7 +199,10 @@ def build_response(channel, result, limit):
         "date_column": date_column,
         "date_format": "dd/mm/yyyy",
         "limit": limit,
-        "truncated": result["truncated"],
+        "offset": offset,
+        "next_offset": result["next_offset"],
+        "has_more": result["has_more"],
+        "truncated": result["has_more"],
         "data": result["records"],
     }
 
@@ -218,8 +234,15 @@ async def health():
 @app.get("/api/v1/sales/{channel}")
 async def sales(
     channel: str,
+    request: Request,
+    response: Response,
     start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
     limit: int = Query(1000, ge=1, le=10000, description="Maximum rows to return"),
+    offset: int = Query(0, ge=0, description="Number of matching rows to skip"),
 ):
-    result = get_channel_rows(channel, start_date, limit)
-    return build_response(channel, result, limit)
+    result = get_channel_rows(channel, start_date, limit, offset)
+    if result["has_more"]:
+        next_url = request.url.include_query_params(offset=result["next_offset"])
+        response.headers["Link"] = f'<{next_url}>; rel="next"'
+
+    return build_response(channel, result, limit, offset)
