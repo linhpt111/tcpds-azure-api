@@ -3,6 +3,7 @@ import os
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import pandas as pd
 from azure.storage.blob import BlobServiceClient
@@ -207,6 +208,14 @@ def build_response(channel, result, limit, offset):
     }
 
 
+def build_next_link(request, next_offset):
+    next_url = str(request.url.include_query_params(offset=next_offset))
+    parts = urlsplit(next_url)
+    scheme = request.headers.get("x-forwarded-proto", parts.scheme)
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host") or parts.netloc
+    return urlunsplit((scheme, host, parts.path, parts.query, parts.fragment))
+
+
 @app.get("/")
 async def root():
     return {
@@ -242,7 +251,7 @@ async def sales(
 ):
     result = get_channel_rows(channel, start_date, limit, offset)
     if result["has_more"]:
-        next_url = request.url.include_query_params(offset=result["next_offset"])
+        next_url = build_next_link(request, result["next_offset"])
         response.headers["Link"] = f'<{next_url}>; rel="next"'
 
     return build_response(channel, result, limit, offset)
