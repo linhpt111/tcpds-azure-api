@@ -25,6 +25,7 @@ date_dim.csv
 web_sales.csv
 store_sales.csv
 catalog_sales.csv
+inventory.csv
 ```
 
 If the files are inside a folder in the container, set `AZURE_BLOB_PREFIX`.
@@ -89,7 +90,11 @@ GET /health
 GET /api/v1/sales/web?start_date=2026-07-06&limit=2
 GET /api/v1/sales/store?start_date=2026-07-06&limit=2
 GET /api/v1/sales/catalog?start_date=2026-07-06&limit=2
+GET /api/v1/sales/inventory?start_date=2026-07-06&limit=2
 ```
+
+`inventory` is snapshot-style data, so not every date has matching rows. If a
+specific date returns `count: 0`, try a wider `start_date` range.
 
 ## Success Response
 

@@ -20,10 +20,11 @@ BLOB_PREFIX = os.getenv("AZURE_BLOB_PREFIX", "").strip("/")
 CACHE_DIR = Path(os.getenv("BLOB_CACHE_DIR", Path(tempfile.gettempdir()) / "tpcds-api-cache"))
 
 DATE_DIM_BLOB = "date_dim.csv"
-SALES_FILES = {
-    "web": ("web_sales.csv", "ws_sold_date_sk"),
-    "store": ("store_sales.csv", "ss_sold_date_sk"),
-    "catalog": ("catalog_sales.csv", "cs_sold_date_sk"),
+DATA_FILES = {
+    "web": ("web_sales.csv", "ws_sold_date_sk", "sold_date"),
+    "store": ("store_sales.csv", "ss_sold_date_sk", "sold_date"),
+    "catalog": ("catalog_sales.csv", "cs_sold_date_sk", "sold_date"),
+    "inventory": ("inventory.csv", "inv_date_sk", "inventory_date"),
 }
 
 date_dim_cache = None
@@ -104,17 +105,13 @@ def build_date_mapping(start_date_str):
         if current_sk is not None and past_sk is not None:
             mapping[str(past_sk)] = {
                 "date_sk": int(current_sk),
-                "sold_date": datetime.strptime(current_date, "%Y-%m-%d").strftime("%d/%m/%Y"),
+                "display_date": datetime.strptime(current_date, "%Y-%m-%d").strftime("%d/%m/%Y"),
             }
 
     return start, today, mapping
 
 
-def get_sales_rows(channel, start_date, limit):
-    if channel not in SALES_FILES:
-        raise HTTPException(status_code=404, detail=f"Unknown channel: {channel}")
-
-    file_name, sk_column = SALES_FILES[channel]
+def get_rows(file_name, sk_column, date_column, start_date, limit):
     start, end, past_to_current = build_date_mapping(start_date)
     past_sk_set = set(past_to_current)
 
@@ -130,7 +127,7 @@ def get_sales_rows(channel, start_date, limit):
         }
 
     local_path = download_blob_to_cache(file_name)
-    logger.info("Reading %s for channel %s", local_path, channel)
+    logger.info("Reading %s", local_path)
 
     for chunk in pd.read_csv(
         local_path,
@@ -147,8 +144,8 @@ def get_sales_rows(channel, start_date, limit):
         matching[sk_column] = original_sk.map(lambda sk: past_to_current[sk]["date_sk"])
         matching.insert(
             matching.columns.get_loc(sk_column) + 1,
-            "sold_date",
-            original_sk.map(lambda sk: past_to_current[sk]["sold_date"]),
+            date_column,
+            original_sk.map(lambda sk: past_to_current[sk]["display_date"]),
         )
 
         remaining = limit - len(rows)
@@ -170,14 +167,23 @@ def get_sales_rows(channel, start_date, limit):
     }
 
 
+def get_channel_rows(channel, start_date, limit):
+    if channel not in DATA_FILES:
+        raise HTTPException(status_code=404, detail=f"Unknown channel: {channel}")
+
+    file_name, sk_column, date_column = DATA_FILES[channel]
+    return get_rows(file_name, sk_column, date_column, start_date, limit)
+
+
 def build_response(channel, result, limit):
+    _, _, date_column = DATA_FILES[channel]
     return {
         "status": "success",
         "channel": channel,
         "count": len(result["records"]),
         "start_date": result["start_date"],
         "end_date": result["end_date"],
-        "date_column": "sold_date",
+        "date_column": date_column,
         "date_format": "dd/mm/yyyy",
         "limit": limit,
         "truncated": result["truncated"],
@@ -194,6 +200,7 @@ async def root():
             "/api/v1/sales/web",
             "/api/v1/sales/store",
             "/api/v1/sales/catalog",
+            "/api/v1/sales/inventory",
         ],
     }
 
@@ -214,5 +221,5 @@ async def sales(
     start_date: str = Query(..., description="Start date in YYYY-MM-DD format"),
     limit: int = Query(1000, ge=1, le=10000, description="Maximum rows to return"),
 ):
-    result = get_sales_rows(channel, start_date, limit)
+    result = get_channel_rows(channel, start_date, limit)
     return build_response(channel, result, limit)
